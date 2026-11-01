@@ -35,4 +35,6 @@ local_protocol = "http"
 [triggers]
 crons = ["* * * * *"]
 
-# Bind a KV namespace named PUSH_KV in Cloudflare Dashboard > Worker > Settings > Bindings.
+[[kv_namespaces]]
+binding = "PUSH_KV"
+id = "fe56ca792d2946f4967641e3db2493da"
