@@ -1,3 +1,4 @@
+
 # 地震情報モニター（試作版）
 
 気象庁が公開している防災情報XML（PULL型）を利用し、日本全国の地震情報を一覧表示するWebサイトの試作版です。
@@ -127,3 +128,33 @@ npx wrangler deploy
 - [気象庁 防災情報XML PULL型](https://xml.kishou.go.jp/xmlpull.html)
 - [気象庁 防災情報ページ（地震）](https://www.jma.go.jp/bosai/map.html#contents=earthquake_map)
 - [Cloudflare Workers ドキュメント](https://developers.cloudflare.com/workers/)
+
+
+## Web Push通知（追加機能）
+
+この試作版はCloudflare Workers Cron Triggerで約1分ごとに公開XMLを確認し、新しい地震情報を検出した場合にWeb Pushを送ります。公開XMLの更新・取得遅延は保証されず、緊急地震速報の受信機能ではありません。
+
+### Cloudflare側の設定
+
+1. Cloudflare DashboardでWorkers & Pagesを開き、`earthquake-monitor` Workerを選択します。
+2. Settings → Bindings → Add → KV Namespace を選び、変数名を `PUSH_KV` にしてKV namespaceを新規作成・接続します。
+3. `wrangler.toml` のCron Triggerは1分ごと（`* * * * *`）です。Git連携デプロイ後、WorkerのTriggersでCronが登録されていることを確認してください。
+4. KVが接続されると、VAPID鍵は初回利用時にWorker内で自動生成され、KVに保存されます。秘密鍵をGitHubへ登録する必要はありません。
+
+### iPhoneで通知を有効にする
+
+1. iOS 16.4以降のiPhoneでSafariからサイトを開きます。
+2. 共有メニュー →「ホーム画面に追加」→「ウェブアプリとして開く」を有効にして追加します。
+3. ホーム画面に追加されたEarthquake Monitorのアイコンから起動します。
+4. ページ内の「通知を有効にする」をタップし、通知を許可します。
+5. iPhoneの「設定」→「通知」からEarthquake Monitorの通知が許可されていることを確認します。
+
+**重要:** iPhoneではSafariの通常タブではなく、ホーム画面に追加したWebアプリとして開く必要があります。Appleの仕様上、通知許可はユーザー操作を起点に要求します。
+
+### 通知の挙動と制限
+
+- Workerが1分ごとに気象庁公開フィードを確認します。Cron実行時刻やフィード更新は秒単位で保証されません。
+- 最初のCron実行は既存データを基準値として登録し、過去の地震を一斉通知しません。
+- 新着判定はEventIDと報告時刻を組み合わせます。
+- Web Pushは端末の通知設定、通信状態、OSの省電力制御などに影響されます。
+- 通知が届かない場合でも、緊急地震速報として扱わないでください。防災判断には気象庁・自治体の公式情報を使用してください。
