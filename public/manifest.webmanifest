@@ -1,1 +1,17 @@
 
+{
+  "id": "/",
+  "name": "Earthquake Monitor",
+  "short_name": "地震モニター",
+  "description": "気象庁公開XMLに基づく地震情報通知の試作版",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#07111f",
+  "theme_color": "#07111f",
+  "lang": "ja",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
