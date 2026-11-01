@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="気象庁公開XMLに基づく地震情報モニター（試作版）。避難判断の唯一の情報源として使用しないでください。">
+  <title>地震情報モニター（試作版）</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <h1 class="site-title">地震情報モニター</h1>
+      <p class="site-subtitle">気象庁公開データに基づく試作版</p>
+    </div>
+  </header>
+
+  <main class="main-content">
+    <!-- 注意書き -->
+    <section class="notice-box" role="alert">
+      <h2 class="notice-title">ご利用上の注意（必ずお読みください）</h2>
+      <ul class="notice-list">
+        <li>本サイトは<strong>試作版</strong>です。気象庁の公式情報ではありません。</li>
+        <li>公開されているPULL型XMLフィードを利用しています。リアルタイム性が保証されるものではありません。</li>
+        <li><strong>緊急地震速報の受信機能はありません。</strong>実際の緊急地震速報は、気象庁や契約事業者の配信サービスが必要です。</li>
+        <li>本サイトの情報を、避難判断や人命に関わる判断の<strong>唯一の情報源</strong>として使用しないでください。</li>
+        <li>最新かつ正確な情報は、<a href="https://www.jma.go.jp/bosai/map.html#contents=earthquake_map" target="_blank" rel="noopener">気象庁防災情報ページ</a>をご確認ください。</li>
+      </ul>
+    </section>
+
+    <!-- 操作バー -->
+    <section class="control-bar">
+      <div class="control-group">
+        <button id="btn-refresh" class="btn btn-primary" type="button">情報を更新</button>
+        <span id="last-updated" class="last-updated">最終更新: --</span>
+      </div>
+      <div class="control-group">
+        <button id="btn-training" class="btn btn-training" type="button">訓練用 緊急地震速報を表示</button>
+      </div>
+    </section>
+
+    <!-- 地域フィルター -->
+    <section class="filter-section">
+      <h2 class="section-title">地域フィルター（都道府県）</h2>
+      <div class="filter-actions">
+        <button id="btn-select-all" class="btn btn-small" type="button">全国を選択</button>
+        <button id="btn-clear-all" class="btn btn-small" type="button">選択解除</button>
+      </div>
+      <div id="prefecture-filters" class="prefecture-grid" role="group" aria-label="都道府県選択">
+        <!-- JSで生成 -->
+      </div>
+    </section>
+
+    <!-- ステータス・エラー -->
+    <div id="status-area" class="status-area" aria-live="polite"></div>
+
+    <!-- 地震一覧 -->
+    <section class="earthquake-section">
+      <h2 class="section-title">最新の地震情報</h2>
+      <div id="earthquake-list" class="earthquake-list">
+        <p class="loading-message">読み込み中...</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- 訓練用オーバーレイ（実際のEEWと分離） -->
+  <div id="training-overlay" class="training-overlay" hidden>
+    <div class="training-panel">
+      <div class="training-badge">【訓練】架空情報</div>
+      <h2 class="training-title">緊急地震速報（訓練）</h2>
+      <p class="training-warning">これは訓練用の表示です。実際の緊急地震速報ではありません。</p>
+      <div class="training-body">
+        <p class="training-epicenter">震源地: <strong>架空の地点（訓練用）</strong></p>
+        <p class="training-mag">推定マグニチュード: <strong>M6.8（架空）</strong></p>
+        <p class="training-intensity">最大震度: <strong>震度6弱（架空）</strong></p>
+        <p class="training-note">※本表示はサイト内の訓練機能です。気象庁の配信とは無関係です。</p>
+      </div>
+      <button id="btn-close-training" class="btn btn-primary" type="button">閉じる</button>
+    </div>
+  </div>
+
+  <footer class="site-footer">
+    <p>データ出典: 気象庁 防災情報XML（PULL型） | 本サイトは非公式の試作版です</p>
+    <p>利用にあたっては気象庁の利用規約・留意事項を遵守してください</p>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
