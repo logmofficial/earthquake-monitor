@@ -1,0 +1,32 @@
+# Cloudflare Workers 設定（無料枠対応）
+# ドキュメント: https://developers.cloudflare.com/workers/wrangler/configuration/
+
+name = "earthquake-monitor"
+main = "worker/index.js"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 静的アセット（Workers Assets）
+# public/ 配下の HTML/CSS/JS を配信する
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# ルート（カスタムドメイン利用時）
+# routes = [
+#   { pattern = "earthquake.example.com/*", zone_name = "example.com" }
+# ]
+
+# KV ネームスペース（任意・追加キャッシュ用）
+# 必須ではない。Cache API が標準で動作する。
+# 作成例:
+#   npx wrangler kv namespace create EQ_CACHE
+#   npx wrangler kv namespace create EQ_CACHE --preview
+# [[kv_namespaces]]
+# binding = "EQ_CACHE"
+# id = "YOUR_KV_NAMESPACE_ID"
+# preview_id = "YOUR_PREVIEW_KV_NAMESPACE_ID"
+
+[dev]
+port = 8787
+local_protocol = "http"

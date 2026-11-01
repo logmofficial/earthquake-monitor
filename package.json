@@ -1,0 +1,24 @@
+{
+  "name": "earthquake-monitor",
+  "version": "1.0.0",
+  "description": "気象庁公開XMLに基づく地震情報モニター（試作版）- Cloudflare Workers",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "earthquake",
+    "jma",
+    "cloudflare-workers",
+    "japan"
+  ],
+  "license": "UNLICENSED"
+}
