@@ -22,44 +22,41 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
-    if (request.method === "OPTIONS") {
-      return corsResponse(null, 204);
-    }
-
-    if (path === "/api/earthquakes") {
-      return handleEarthquakes(request, env, ctx);
-    }
-
+    if (request.method === "OPTIONS") return corsResponse(null, 204);
+    if (path === "/api/earthquakes") return handleEarthquakes(request, env, ctx);
     if (path === "/api/health") {
-      return corsResponse(
-        JSON.stringify({
-          status: "ok",
-          service: "earthquake-monitor",
-          time: new Date().toISOString(),
-          note: "公開XMLベースの試作API。緊急地震速報の受信機能はありません。"
-        }),
-        200,
-        { "Content-Type": "application/json; charset=utf-8" }
-      );
+      return corsResponse(JSON.stringify({
+        status: "ok", service: "earthquake-monitor", time: new Date().toISOString(),
+        pushConfigured: Boolean(env && env.PUSH_KV),
+        note: "公開XMLベースの試作API。緊急地震速報の受信機能はありません。"
+      }), 200, { "Content-Type": "application/json; charset=utf-8" });
     }
+    if (path === "/api/push/public-key" && request.method === "GET") return getPushPublicKey(env);
+    if (path === "/api/push/subscribe" && request.method === "POST") return savePushSubscription(request, env);
+    if (path === "/api/push/unsubscribe" && request.method === "POST") return removePushSubscription(request, env);
 
-    // 静的アセット（Workers Assets）へ委譲
     if (env && env.ASSETS) {
-      try {
-        return await env.ASSETS.fetch(request);
-      } catch (e) {
-        console.warn("ASSETS.fetch failed", e);
-      }
+      try { return await env.ASSETS.fetch(request); }
+      catch (e) { console.warn("ASSETS.fetch failed", e); }
     }
-
-    if (path === "/" || path === "/index.html") {
-      return new Response(
-        "Earthquake Monitor API is running. Configure Workers Assets (public/) to serve the frontend.",
-        { status: 200, headers: { "Content-Type": "text/plain; charset=utf-8" } }
-      );
-    }
-
     return new Response("Not Found", { status: 404 });
+  },
+
+  async scheduled(controller, env, ctx) {
+    if (!env || !env.PUSH_KV) {
+      console.error("PUSH_KV binding is missing; scheduled push check skipped.");
+      return;
+    }
+    try {
+      const response = await handleEarthquakes(
+        new Request("https://internal.invalid/api/earthquakes"), env, ctx
+      );
+      if (!response.ok) throw new Error(`Earthquake API returned ${response.status}`);
+      const payload = await response.json();
+      await notifyForNewEarthquakes(payload, env);
+    } catch (error) {
+      console.error("Scheduled earthquake check failed:", error);
+    }
   }
 };
 
@@ -220,6 +217,203 @@ async function handleEarthquakes(request, env, ctx) {
       { "Content-Type": "application/json; charset=utf-8" }
     );
   }
+}
+
+// -----------------------------------------------------------------------------
+// Web Push (RFC 8030 / RFC 8291 / VAPID)
+// PUSH_KV stores subscriptions, VAPID key material and deduplication state.
+// -----------------------------------------------------------------------------
+const PUSH_PREFIX = "push:subscription:";
+const VAPID_CONFIG_KEY = "push:config:vapid";
+const PUSH_STATE_KEY = "push:state:seen";
+const PUSH_SUBJECT = "https://earthquake-monitor.logm-official.workers.dev/";
+
+async function getPushPublicKey(env) {
+  if (!env || !env.PUSH_KV) return jsonResponse({ error: "PUSH_KV binding is not configured" }, 503);
+  try {
+    const keys = await ensureVapidKeys(env);
+    return jsonResponse({ publicKey: keys.publicKey });
+  } catch (e) {
+    console.error("VAPID key initialization failed", e);
+    return jsonResponse({ error: "Push configuration failed" }, 500);
+  }
+}
+
+async function savePushSubscription(request, env) {
+  if (!env || !env.PUSH_KV) return jsonResponse({ error: "PUSH_KV binding is not configured" }, 503);
+  try {
+    const sub = await request.json();
+    if (!sub || typeof sub.endpoint !== "string" || !sub.endpoint.startsWith("https://") ||
+        !sub.keys || typeof sub.keys.p256dh !== "string" || typeof sub.keys.auth !== "string") {
+      return jsonResponse({ error: "Invalid PushSubscription" }, 400);
+    }
+    const hash = await sha256Base64Url(sub.endpoint);
+    await env.PUSH_KV.put(PUSH_PREFIX + hash, JSON.stringify(sub));
+    return jsonResponse({ ok: true });
+  } catch (e) {
+    console.error("Subscription save failed", e);
+    return jsonResponse({ error: "Could not save subscription" }, 500);
+  }
+}
+
+async function removePushSubscription(request, env) {
+  if (!env || !env.PUSH_KV) return jsonResponse({ error: "PUSH_KV binding is not configured" }, 503);
+  try {
+    const body = await request.json();
+    if (!body || typeof body.endpoint !== "string") return jsonResponse({ error: "Invalid endpoint" }, 400);
+    const hash = await sha256Base64Url(body.endpoint);
+    await env.PUSH_KV.delete(PUSH_PREFIX + hash);
+    return jsonResponse({ ok: true });
+  } catch (e) {
+    return jsonResponse({ error: "Could not remove subscription" }, 500);
+  }
+}
+
+async function ensureVapidKeys(env) {
+  let saved = await env.PUSH_KV.get(VAPID_CONFIG_KEY, "json");
+  if (saved && saved.privateJwk && saved.publicKey) return saved;
+  const pair = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", pair.privateKey);
+  const publicBytes = new Uint8Array(65);
+  publicBytes[0] = 4;
+  publicBytes.set(base64UrlDecode(jwk.x), 1);
+  publicBytes.set(base64UrlDecode(jwk.y), 33);
+  const config = { privateJwk: jwk, publicKey: base64UrlEncode(publicBytes) };
+  await env.PUSH_KV.put(VAPID_CONFIG_KEY, JSON.stringify(config));
+  return config;
+}
+
+async function notifyForNewEarthquakes(payload, env) {
+  const list = Array.isArray(payload.earthquakes) ? payload.earthquakes : [];
+  const records = list.map((eq) => ({
+    key: `${eq.eventId || eq.sourceUrl || eq.originTime || "unknown"}|${eq.reportTime || ""}`,
+    eq
+  })).filter((x) => x.key !== "unknown|");
+  if (!records.length) return;
+
+  const previous = await env.PUSH_KV.get(PUSH_STATE_KEY, "json");
+  const seen = new Set(previous && Array.isArray(previous.keys) ? previous.keys : []);
+  // First scheduled run establishes a baseline and intentionally sends no backlog.
+  if (!previous) {
+    await env.PUSH_KV.put(PUSH_STATE_KEY, JSON.stringify({ keys: records.map(x => x.key).slice(0, 200) }));
+    return;
+  }
+
+  const fresh = records.filter(x => !seen.has(x.key));
+  if (!fresh.length) return;
+  const subscriptions = await env.PUSH_KV.list({ prefix: PUSH_PREFIX, limit: 1000 });
+  for (const item of fresh.slice(0, 10).reverse()) {
+    const eq = item.eq;
+    const title = `地震情報：${eq.epicenter || "震源地不明"}`;
+    const body = `最大震度 ${eq.maxIntensity || "不明"} ／ M${eq.magnitude ?? "不明"}。公開XMLに基づく情報です。`;
+    const data = { title, body, url: "/", tag: item.key };
+    for (const key of subscriptions.keys) {
+      const sub = await env.PUSH_KV.get(key.name, "json");
+      if (!sub) continue;
+      try {
+        const result = await sendWebPush(sub, data, env);
+        if (result.status === 404 || result.status === 410) await env.PUSH_KV.delete(key.name);
+        else if (!result.ok) console.warn("Push service response", result.status, await result.text().catch(() => ""));
+      } catch (e) {
+        console.warn("Push send failed", e);
+      }
+    }
+  }
+  const merged = [...fresh.map(x => x.key), ...Array.from(seen)].slice(0, 200);
+  await env.PUSH_KV.put(PUSH_STATE_KEY, JSON.stringify({ keys: merged }));
+}
+
+async function sendWebPush(subscription, message, env) {
+  const endpoint = new URL(subscription.endpoint);
+  const vapid = await ensureVapidKeys(env);
+  const token = await createVapidToken(endpoint.origin, vapid.privateJwk, vapid.publicKey);
+  const encrypted = await encryptPushPayload(subscription, JSON.stringify(message));
+  return fetch(subscription.endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `vapid t=${token}, k=${vapid.publicKey}`,
+      "Content-Encoding": "aes128gcm",
+      "Content-Type": "application/octet-stream",
+      "TTL": "300",
+      "Urgency": "high"
+    },
+    body: encrypted
+  });
+}
+
+async function createVapidToken(audience, privateJwk, publicKey) {
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ aud: audience, exp: now + 12 * 60 * 60, sub: PUSH_SUBJECT })));
+  const unsigned = `${header}.${payload}`;
+  const key = await crypto.subtle.importKey("jwk", privateJwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const signature = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(unsigned));
+  return `${unsigned}.${base64UrlEncode(new Uint8Array(signature))}`;
+}
+
+async function encryptPushPayload(subscription, text) {
+  const uaPublic = base64UrlDecode(subscription.keys.p256dh);
+  const authSecret = base64UrlDecode(subscription.keys.auth);
+  const receiverKey = await crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
+  const serverPair = await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  const serverPublic = new Uint8Array(await crypto.subtle.exportKey("raw", serverPair.publicKey));
+  const shared = new Uint8Array(await crypto.subtle.deriveBits({ name: "ECDH", public: receiverKey }, serverPair.privateKey, 256));
+  const authPrk = await hmacSha256(authSecret, shared);
+  const info = concatBytes(new TextEncoder().encode("WebPush: info\0"), uaPublic, serverPublic);
+  const ikm = await hkdfExpand(authPrk, info, 32);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const prk = await hmacSha256(salt, ikm);
+  const cek = await hkdfExpand(prk, new TextEncoder().encode("Content-Encoding: aes128gcm\0"), 16);
+  const nonce = await hkdfExpand(prk, new TextEncoder().encode("Content-Encoding: nonce\0"), 12);
+  const aesKey = await crypto.subtle.importKey("raw", cek, { name: "AES-GCM" }, false, ["encrypt"]);
+  const plaintext = concatBytes(new TextEncoder().encode(text), new Uint8Array([2]));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv: nonce, tagLength: 128 }, aesKey, plaintext));
+  const header = new Uint8Array(21 + serverPublic.length);
+  header.set(salt, 0);
+  new DataView(header.buffer).setUint32(16, 4096, false);
+  header[20] = serverPublic.length;
+  header.set(serverPublic, 21);
+  return concatBytes(header, ciphertext);
+}
+
+async function hmacSha256(keyBytes, data) {
+  const key = await crypto.subtle.importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, data));
+}
+async function hkdfExpand(prk, info, length) {
+  const blocks = [];
+  let previous = new Uint8Array(0);
+  let counter = 1;
+  let total = 0;
+  while (total < length) {
+    previous = await hmacSha256(prk, concatBytes(previous, info, new Uint8Array([counter++])));
+    blocks.push(previous);
+    total += previous.length;
+  }
+  return concatBytes(...blocks).slice(0, length);
+}
+function concatBytes(...arrays) {
+  const size = arrays.reduce((n, a) => n + a.length, 0);
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const a of arrays) { out.set(a, offset); offset += a.length; }
+  return out;
+}
+function base64UrlEncode(bytes) {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+function base64UrlDecode(value) {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(base64 + "=".repeat((4 - base64.length % 4) % 4));
+  return Uint8Array.from(binary, c => c.charCodeAt(0));
+}
+async function sha256Base64Url(value) {
+  return base64UrlEncode(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
+}
+function jsonResponse(value, status = 200) {
+  return corsResponse(JSON.stringify(value), status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
 }
 
 /**
@@ -550,7 +744,7 @@ function normalizeFullWidthNumber(s) {
 function corsResponse(body, status = 200, extraHeaders = {}) {
   const headers = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Accept",
     "Access-Control-Max-Age": "86400",
     ...extraHeaders
