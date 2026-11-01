@@ -30,3 +30,9 @@ binding = "ASSETS"
 [dev]
 port = 8787
 local_protocol = "http"
+
+# Cloudflare Workers Cron Trigger: once per minute (UTC)
+[triggers]
+crons = ["* * * * *"]
+
+# Bind a KV namespace named PUSH_KV in Cloudflare Dashboard > Worker > Settings > Bindings.
