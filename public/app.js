@@ -326,6 +326,100 @@
     return escapeHtml(str).replace(/\n/g, " ");
   }
 
+  // ===== Web Push =====
+  const $pushStatus = document.getElementById("push-status");
+  const $btnEnablePush = document.getElementById("btn-enable-push");
+  const $btnDisablePush = document.getElementById("btn-disable-push");
+
+  function setPushStatus(message) {
+    if ($pushStatus) $pushStatus.textContent = message;
+  }
+
+  function base64UrlToUint8Array(value) {
+    const padding = "=".repeat((4 - value.length % 4) % 4);
+    const base64 = (value + padding).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(base64);
+    return Uint8Array.from(raw, c => c.charCodeAt(0));
+  }
+
+  async function updatePushState() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushStatus("このブラウザ環境ではWeb Pushに対応していません。");
+      if ($btnEnablePush) $btnEnablePush.disabled = true;
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setPushStatus("通知がブラウザ設定で拒否されています。端末の設定から変更してください。");
+      return;
+    }
+    const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      setPushStatus("この端末はプッシュ通知に登録済みです。");
+      if ($btnEnablePush) $btnEnablePush.hidden = true;
+      if ($btnDisablePush) $btnDisablePush.hidden = false;
+    } else {
+      setPushStatus("この端末はまだ通知に登録されていません。");
+      if ($btnEnablePush) $btnEnablePush.hidden = false;
+      if ($btnDisablePush) $btnDisablePush.hidden = true;
+    }
+  }
+
+  async function enablePush() {
+    if (!window.isSecureContext || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setPushStatus("HTTPS対応のホーム画面Webアプリで操作してください。");
+      return;
+    }
+    try {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        setPushStatus("通知が許可されませんでした。端末の通知設定を確認してください。");
+        return;
+      }
+      const keyResponse = await fetch("/api/push/public-key", { cache: "no-store" });
+      if (!keyResponse.ok) throw new Error("通知サーバーの設定が完了していません。");
+      const keyData = await keyResponse.json();
+      const registration = await navigator.serviceWorker.register("/sw.js", { scope: "/" });
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToUint8Array(keyData.publicKey)
+      });
+      const saveResponse = await fetch("/api/push/subscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(subscription)
+      });
+      if (!saveResponse.ok) throw new Error("通知登録をサーバーに保存できませんでした。");
+      setPushStatus("通知を有効にしました。この端末に新着地震情報を送信します。");
+      await updatePushState();
+    } catch (error) {
+      console.error("Push setup failed", error);
+      setPushStatus(error.message || "通知設定に失敗しました。");
+    }
+  }
+
+  async function disablePush() {
+    try {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      const subscription = registration && await registration.pushManager.getSubscription();
+      if (subscription) {
+        await fetch("/api/push/unsubscribe", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ endpoint: subscription.endpoint })
+        });
+        await subscription.unsubscribe();
+      }
+      setPushStatus("この端末のプッシュ通知登録を解除しました。");
+      await updatePushState();
+    } catch (error) {
+      setPushStatus("通知解除に失敗しました。");
+    }
+  }
+
+  if ($btnEnablePush) $btnEnablePush.addEventListener("click", enablePush);
+  if ($btnDisablePush) $btnDisablePush.addEventListener("click", disablePush);
+  updatePushState().catch(error => setPushStatus("通知状態を確認できませんでした。"));
+
   // 起動
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);
